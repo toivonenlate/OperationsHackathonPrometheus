@@ -1,0 +1,44 @@
+@import 'tailwindcss';
+
+/* Apple system palette and type stack. SF Pro cannot be served as a webfont,
+   so the -apple-system stack is used: on macOS and iOS it resolves to the real
+   SF Pro Text / SF Pro Display, and SF Mono for the code chips. */
+@theme {
+  --color-canvas: #f2f2f7;
+  --color-card: #ffffff;
+  --color-label: #1c1c1e;
+  --color-secondary: #8e8e93;
+  --color-tertiary: #c7c7cc;
+  --color-fill: #e5e5ea;
+  --color-blue: #007aff;
+  --color-red: #ff3b30;
+  --color-amber: #ff9500;
+  --color-green: #34c759;
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui,
+    sans-serif;
+  --font-display:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui,
+    sans-serif;
+  --font-mono:
+    ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-label);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-blue);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
