@@ -1,44 +1,100 @@
 @import 'tailwindcss';
 
-/* Apple system palette and type stack. SF Pro cannot be served as a webfont,
-   so the -apple-system stack is used: on macOS and iOS it resolves to the real
-   SF Pro Text / SF Pro Display, and SF Mono for the code chips. */
+/* Bahn Express visual system, at night.
+   Type and token names are lifted from the live site's own --bx-color-* /
+   --font-geist tokens (bahnexpress.fi). The surfaces are its asphalt and grey
+   ramp turned over: BahnOS is a control room, read for hours on end, so it is
+   dark everywhere. The four signal colours are Bahn's own and hold up on dark.
+
+   The semantics are Bahn's too: red marks danger, orange a risk, teal the agent
+   or live work, green a confirmation. Primary actions are the inverse of the
+   page: birch-light buttons on asphalt. */
 @theme {
-  --color-canvas: #f2f2f7;
-  --color-card: #ffffff;
-  --color-label: #1c1c1e;
-  --color-secondary: #8e8e93;
-  --color-tertiary: #c7c7cc;
-  --color-fill: #e5e5ea;
-  --color-blue: #007aff;
-  --color-red: #ff3b30;
-  --color-amber: #ff9500;
-  --color-green: #34c759;
+  --color-birch: #1f1d18; /* raised surface: hover, selection */
+  --color-canvas: #0f0e0b; /* bx-color-asphalt, the page */
+  --color-card: #171511; /* panels */
+  --color-hair: #2b2821; /* hairlines */
+  --color-sand: #3d392f; /* stronger borders */
+
+  --color-label: #f1eee6; /* bx-color-grey-50, headings */
+  --color-body: #d8d2c4; /* reading text */
+  --color-secondary: #a39a87;
+  --color-tertiary: #776f60;
+  --color-fill: #2a2720; /* code chips */
+  --color-ink: #f1eee6; /* primary action surface */
+
+  --color-teal: #43afc1; /* bx-color-teal-500 — agent, live work */
+  --color-green: #29af77; /* bx-color-green-500 — confirmed */
+  --color-orange: #fd6a31; /* bx-color-orange-500 — a risk */
+  --color-red: #fd4a61; /* bx-color-red-500 — danger */
+  /* Bahn has no amber; risk is orange. Alias kept so tones read consistently. */
+  --color-amber: #fd6a31;
 
   --font-sans:
-    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui,
-    sans-serif;
+    var(--font-geist), -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
   --font-display:
-    -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui,
+    var(--font-geist), -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial,
     sans-serif;
   --font-mono:
-    ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+    var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco,
+    'Courier New', monospace;
 }
 
 html {
+  color-scheme: dark;
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* Reserve the scrollbar track on every page. Without this, moving from a
+     tall page to a short one removes the scrollbar and shifts all centred
+     content sideways by its width. */
+  scrollbar-gutter: stable;
 }
 
 body {
   margin: 0;
   background: var(--color-canvas);
-  color: var(--color-label);
+  color: var(--color-body);
 }
 
 :focus-visible {
-  outline: 2px solid var(--color-blue);
+  outline: 2px solid var(--color-label);
   outline-offset: 2px;
   border-radius: 4px;
+}
+
+@keyframes ops-flow {
+  to { stroke-dashoffset: -16; }
+}
+@keyframes ops-pulse {
+  0% { r: 4; opacity: 0.7; }
+  100% { r: 13; opacity: 0; }
+}
+.ops-flow { animation: ops-flow 1.2s linear infinite; }
+.ops-pulse { animation: ops-pulse 2s ease-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .ops-flow, .ops-pulse { animation: none; }
+}
+
+/* MapLibre's controls, in the BahnOS tokens. */
+.maplibregl-ctrl-group {
+  background: var(--color-card);
+  border: 1px solid var(--color-hair);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+.maplibregl-ctrl-group button + button {
+  border-top-color: var(--color-hair);
+}
+.maplibregl-ctrl-icon,
+.maplibregl-ctrl-attrib-button {
+  filter: invert(1) opacity(0.7);
+}
+.maplibregl-ctrl.maplibregl-ctrl-attrib,
+.maplibregl-ctrl.maplibregl-ctrl-attrib.maplibregl-compact-show {
+  background: color-mix(in srgb, var(--color-card) 85%, transparent);
+  color: var(--color-tertiary);
+}
+.maplibregl-ctrl-attrib a {
+  color: var(--color-secondary);
 }

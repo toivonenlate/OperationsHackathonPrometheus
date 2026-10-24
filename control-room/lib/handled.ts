@@ -16,6 +16,8 @@ export type HandledItem = {
   action: string
   command: string
   orderRef: string | null
+  /** So a handled action can open the same case page as a raised one. */
+  orderId: string | null
   at: string
   /** The reviewer's own words, when a person was in the loop. */
   note: string | null
@@ -84,6 +86,7 @@ export function buildHandled(data: Dataset = load()): Handled {
       action: words(e.command ?? ''),
       command: e.command ?? '',
       orderRef: e.order_id ? orderRef.get(e.order_id) ?? null : null,
+      orderId: e.order_id,
       at: e.recorded_at,
       note: null,
       decision: null,
@@ -104,6 +107,7 @@ export function buildHandled(data: Dataset = load()): Handled {
       action: words(p.command),
       command: p.command,
       orderRef: orderRef.get(p.order_id) ?? null,
+      orderId: p.order_id,
       at: p.execution?.attempted_at ?? p.review?.reviewed_at ?? p.created_at,
       note: p.review?.decision_note ?? null,
       decision: (p.review?.decision as HandledItem['decision']) ?? null,
