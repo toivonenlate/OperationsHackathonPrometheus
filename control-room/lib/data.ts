@@ -202,3 +202,143 @@ export function loadLog() {
   }
   return extra
 }
+
+export type Expense = {
+  id: string
+  order_id: string
+  assignment_id: string | null
+  driver_id: string | null
+  kind: string
+  status: string
+  amount_cents: number
+  currency: string
+  merchant?: string
+  cost_country?: string
+  payer: string
+  reimbursable_to_driver: boolean
+  receipt_count: number
+  receipt_state?: string
+  review_note: string | null
+  submission_source: string
+  service_at: string
+  submitted_at: string
+  reviewed_at: string | null
+}
+
+export type InboxMessage = {
+  id: string
+  thread_id: string
+  author_id: string
+  author_type: string
+  recipient_id: string | null
+  recipient_type: string | null
+  body: string
+  channel: string
+  language: string | null
+  visibility: string
+  authored_at: string
+}
+
+export type CustodyReport = {
+  id: string
+  order_id?: string
+  assignment_id?: string
+  reported_at?: string
+  summary?: string
+  source?: string
+}
+
+/** Records only the case view needs. Kept out of the main load for the list. */
+let caseExtra: {
+  expenses: Expense[]
+  inboxMessages: InboxMessage[]
+  custodyReports: CustodyReport[]
+} | null = null
+
+export function loadCaseRecords() {
+  if (!caseExtra) {
+    caseExtra = {
+      expenses: read<Expense>('expenses'),
+      inboxMessages: read<InboxMessage>('support_inbox_messages'),
+      custodyReports: read<CustodyReport>('custody_reports'),
+    }
+  }
+  return caseExtra
+}
+
+export type Address = {
+  id: string
+  city: string
+  country: string
+  name: string | null
+  kind: string
+  address_line1: string | null
+  timezone: string | null
+  access_note: string | null
+}
+export type TransportPoint = {
+  id: string
+  plan_id: string
+  address_id: string
+  site_id: string | null
+  role: string
+  order_boundary: string | null
+  sequence: number
+}
+export type TransportSegment = {
+  id: string
+  plan_id: string
+  from_point_id: string
+  to_point_id: string
+  transport_mode: string
+  distance_km: number | null
+  status: string
+  sequence: number
+}
+export type TravelOption = {
+  id: string
+  order_id?: string
+  assignment_id: string | null
+  from_city: string | null
+  to_city?: string | null
+  departure_at: string | null
+  arrival_at: string | null
+  check_in_cutoff_at: string | null
+  capacity_note: string | null
+  checked_at: string
+  kind?: string
+}
+export type TravelReservation = {
+  id: string
+  order_id?: string
+  assignment_id: string | null
+  kind: string
+  status?: string
+  from_city?: string | null
+  to_city?: string | null
+  departure_at: string | null
+  expected_arrival_at: string | null
+  check_in_cutoff_at?: string | null
+}
+
+/** Route records, loaded only where a route is drawn. */
+let routeData: {
+  addresses: Address[]
+  points: TransportPoint[]
+  segments: TransportSegment[]
+  options: TravelOption[]
+  reservations: TravelReservation[]
+} | null = null
+
+export function loadRoute() {
+  if (!routeData) {
+    routeData = {
+      addresses: read<Address>('addresses'),
+      points: read<TransportPoint>('transport_points'),
+      segments: read<TransportSegment>('transport_segments'),
+      options: read<TravelOption>('travel_options'),
+      reservations: read<TravelReservation>('travel_reservations'),
+    }
+  }
+  return routeData
+}

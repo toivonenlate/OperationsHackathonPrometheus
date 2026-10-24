@@ -1,4 +1,6 @@
 // Small shared pieces: code chips and the date format used across views.
+import { Icon } from './icons'
+
 export function Code({ children }: { children: string }) {
   return (
     <code className="rounded-[5px] bg-fill px-[5px] py-[1.5px] font-mono text-[12px] text-label">
@@ -7,18 +9,8 @@ export function Code({ children }: { children: string }) {
   )
 }
 
-export function Chevron() {
-  return (
-    <svg className="size-[11px]" viewBox="0 0 12 12" fill="none" aria-hidden>
-      <path
-        d="M4.2 2.4 8.1 6l-3.9 3.6"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
+export function Chevron({ className }: { className?: string }) {
+  return <Icon name="chevron-right" size={11} className={className} />
 }
 
 export function shortDate(iso: string): string {

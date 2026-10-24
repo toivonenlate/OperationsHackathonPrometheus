@@ -10,6 +10,7 @@
     "cases": "tsx scripts/print-cases.ts"
   },
   "dependencies": {
+    "maplibre-gl": "^6.15.0",
     "next": "^16.4.2",
     "react": "19.2.7",
     "react-dom": "19.2.7"

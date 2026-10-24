@@ -2,17 +2,29 @@
 // the answer to "what happened while I wasn't looking".
 import { type Dataset } from '../../lib/data'
 import { buildHandled } from '../../lib/handled'
-import { shortDate } from './bits'
+import { Chevron, shortDate } from './bits'
+import { Icon, type IconName } from './icons'
 
-const DECISION: Record<string, { word: string; tone: string }> = {
-  APPROVED: { word: 'Approved', tone: 'text-green bg-green/12' },
-  EDITED: { word: 'Edited', tone: 'text-blue bg-blue/12' },
-  REJECTED: { word: 'Stopped', tone: 'text-red bg-red/12' },
+const DECISION: Record<string, { word: string; tone: string; icon: IconName }> = {
+  APPROVED: { word: 'Approved', tone: 'text-green bg-green/12', icon: 'confirmed' },
+  EDITED: { word: 'Edited', tone: 'text-teal bg-teal/12', icon: 'document' },
+  REJECTED: { word: 'Stopped', tone: 'text-red bg-red/12', icon: 'blocked' },
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({
+  label,
+  value,
+  icon,
+  tone,
+}: {
+  label: string
+  value: string
+  icon: IconName
+  tone: string
+}) {
   return (
-    <div className="flex items-baseline gap-3 py-[5px]">
+    <div className="flex items-center gap-[7px] py-[5px]">
+      <Icon name={icon} size={13} className={tone} />
       <span className="text-[12.5px] text-secondary">{label}</span>
       <span className="ml-auto font-mono text-[12.5px] tabular-nums text-label">
         {value}
@@ -26,29 +38,34 @@ export default function HandledPanel({ data }: { data: Dataset }) {
   const reviewed = items.filter((i) => i.tier !== 'autonomous')
 
   return (
-    <div className="rounded-[14px] border border-black/[0.05] bg-card px-[16px] py-[14px] shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.07em] text-secondary">
-        Handled by agents
+    <div className="rounded-[14px] border border-hair bg-card px-[16px] py-[14px] shadow-[0_1px_2px_rgba(66,61,51,0.04),0_2px_10px_rgba(66,61,51,0.05)]">
+      <p className="flex items-center gap-[6px] text-[12px] font-semibold tracking-[-0.005em] text-secondary">
+        <Icon name="agent" size={13} className="text-teal" />
+        Handled by BahnBot
       </p>
       <p className="mt-[9px] font-display text-[22px] font-bold leading-none tracking-[-0.02em] text-label">
         {summary.total}
       </p>
       <p className="mt-[5px] text-[12.5px] leading-[1.45] text-secondary">
-        actions since {shortDate(summary.since)}. {summary.autonomous} needed
-        nobody.
+        actions closed since {shortDate(summary.since)}. {summary.autonomous}{' '}
+        needed nobody.
       </p>
 
-      <div className="mt-[13px] border-t border-black/[0.06] pt-[6px]">
-        <Stat label="Without a person" value={String(summary.autonomous)} />
-        <Stat label="After your approval" value={String(summary.approved)} />
-        <Stat label="Stopped by you" value={String(summary.stopped)} />
-        <Stat label="Fees priced" value={summary.feeTotal} />
+      <div className="mt-[13px] border-t border-hair pt-[6px]">
+        <Stat label="BahnBot resolved" value={String(summary.autonomous)} icon="agent" tone="text-green" />
+        <Stat label="Human approved" value={String(summary.approved)} icon="confirmed" tone="text-teal" />
+        <Stat label="Human stopped" value={String(summary.stopped)} icon="blocked" tone="text-red" />
+        <Stat label="Fees priced" value={summary.feeTotal} icon="euro" tone="text-secondary" />
       </div>
 
-      <p className="mt-[15px] text-[11px] font-semibold uppercase tracking-[0.07em] text-secondary">
-        A person ruled on these
-      </p>
-      <ul className="mt-[9px] flex flex-col gap-[13px]">
+      {/* Collapsed by default: the numbers above are the reassurance, the
+          individual log entries are only there if somebody wants to check. */}
+      <details className="group mt-[15px]">
+        <summary className="flex cursor-pointer list-none items-center gap-[5px] text-[12px] font-semibold tracking-[-0.005em] text-secondary [&::-webkit-details-marker]:hidden">
+          A human decided {reviewed.length}
+          <Chevron className="text-teal transition-transform group-open:rotate-90" />
+        </summary>
+        <ul className="mt-[9px] flex flex-col gap-[13px]">
         {reviewed.map((item) => {
           const d = item.decision ? DECISION[item.decision] : null
           return (
@@ -56,8 +73,9 @@ export default function HandledPanel({ data }: { data: Dataset }) {
               <div className="flex items-center gap-2">
                 {d ? (
                   <span
-                    className={`rounded px-[6px] py-[1px] text-[11px] font-semibold ${d.tone}`}
+                    className={`inline-flex items-center gap-[4px] rounded px-[6px] py-[1px] text-[11px] font-semibold ${d.tone}`}
                   >
+                    <Icon name={d.icon} size={11} />
                     {d.word}
                   </span>
                 ) : null}
@@ -76,11 +94,12 @@ export default function HandledPanel({ data }: { data: Dataset }) {
             </li>
           )
         })}
-      </ul>
+        </ul>
+      </details>
 
-      <p className="mt-[15px] border-t border-black/[0.06] pt-[11px] text-[11.5px] leading-[1.5] text-tertiary">
-        The dispatch agent prices and publishes offers under a policy a person
-        approved. No agent moved a delivery date or wrote to a customer.
+      <p className="mt-[15px] border-t border-hair pt-[11px] text-[11.5px] leading-[1.5] text-tertiary">
+        BahnBot prices and publishes offers under a policy a human approved. It
+        has not moved a delivery date or written to a customer.
       </p>
     </div>
   )
