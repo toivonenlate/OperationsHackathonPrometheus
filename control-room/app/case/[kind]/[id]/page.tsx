@@ -22,6 +22,7 @@ import { Chevron, Code, shortDate } from '../../../components/bits'
 import { deskName, tableName } from '../../../../lib/labels'
 import { Icon, type IconName } from '../../../components/icons'
 import { DECIDED_ICON, badgeIcon } from '../../../components/glyphs'
+import { AssignButton, ProposalActions } from './actions'
 
 const CARD =
   'rounded-[14px] border border-hair bg-card shadow-[0_1px_2px_rgba(66,61,51,0.04),0_2px_10px_rgba(66,61,51,0.05)]'
@@ -293,31 +294,11 @@ function ProposalCard({
           </details>
         ) : null}
 
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            type="button"
-            className="inline-flex items-center gap-[5px] rounded-[7px] px-[10px] py-[5px] text-[13px] font-medium text-label transition-colors hover:bg-hair/70"
-          >
-            <Icon name="document" size={13} />
-            Edit
-          </button>
-          {p.approval === 'NEEDS_PERSON' ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-[5px] rounded-[7px] px-[10px] py-[5px] text-[13px] font-medium text-label transition-colors hover:bg-hair/70"
-            >
-              <Icon name="close" size={13} />
-              Reject
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="inline-flex items-center gap-[6px] rounded-[7px] bg-ink px-[13px] py-[6px] text-[13px] font-semibold text-birch transition-opacity hover:opacity-90 active:opacity-70"
-          >
-            {p.approval === 'AGENT_SENDS' ? 'Send' : 'Approve'}
-            <Icon name={p.approval === 'AGENT_SENDS' ? 'arrow-right' : 'check'} size={13} />
-          </button>
-        </div>
+        <ProposalActions
+          id={p.id}
+          approval={p.approval}
+          draft={p.draft?.kind === 'DRAFT' ? p.draft.body : null}
+        />
       </div>
 
       {p.basis ? (
@@ -378,13 +359,7 @@ export default async function CasePage({
           </h1>
           <p className="mt-[4px] text-[13px] text-secondary">{context.subtitle}</p>
         </div>
-        <button
-          type="button"
-          className="ml-auto inline-flex shrink-0 items-center gap-[6px] rounded-[8px] border border-sand/70 bg-card px-[12px] py-[6px] text-[13px] font-medium text-label transition-colors hover:bg-hair/70"
-        >
-          <Icon name="person" size={14} />
-          Assign to me
-        </button>
+        <AssignButton caseKey={key} />
       </header>
 
       {/* The problem, and the move, before anything else. */}

@@ -1,7 +1,7 @@
 // The ops map: the whole network on one screen, and where BahnOS starts.
 //
 // Every other view is one click from here: a lane opens its case, the
-// dashboard says what to do first. Each order is a lane between two cities,
+// queue says what to do first. Each order is a lane between two cities,
 // coloured by what it needs, and every panel filters every other one. Built
 // from the records at the snapshot; the disruption watch beside it is live
 // and streams in after the map.

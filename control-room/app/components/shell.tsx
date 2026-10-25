@@ -17,7 +17,7 @@ const SNAPSHOT = SNAPSHOT_AT.toLocaleString('en-GB', {
 // navigated. Narrower views cap their own column inside it, left-aligned, so
 // content starts under the wordmark on every page.
 const SHELL = 'max-w-[1560px]'
-/** The queue and the dashboard: a column plus a side rail. */
+/** The queue and driver support: a column plus a side rail. */
 const FULL = 'max-w-[1020px]'
 /** Reading views. Exactly the width of the queue's left column. */
 const MAIN = 'max-w-[704px]'
@@ -65,7 +65,7 @@ export default function Shell({
   wide = false,
   children,
 }: {
-  active: 'dashboard' | 'ops' | 'cases' | 'support' | 'answers'
+  active: 'ops' | 'cases' | 'support' | 'answers'
   /** Shown above the title when this view is a child of another. */
   back?: string
   /** Where the back link goes. Defaults to the queue. */
@@ -91,7 +91,6 @@ export default function Shell({
             </span>
           </Link>
           <NavLink href="/" label="Ops map" icon="globe" active={active === 'ops'} />
-          <NavLink href="/dashboard" label="Dashboard" icon="dashboard" active={active === 'dashboard'} />
           <NavLink href="/cases" label="Cases" icon="cases" active={active === 'cases'} />
           <NavLink href="/support" label="Driver support" icon="support" active={active === 'support'} />
           <NavLink href="/answers" label="Answer book" icon="book" active={active === 'answers'} />

@@ -16,6 +16,8 @@ import {
 } from './data'
 import { buildCases } from './cases'
 import { timelineOf } from './route'
+import { type NextDecision, type StoryItem, type Why, storyOf } from './story'
+import { type HandoverEnd, handoverOf } from './handover'
 
 const HARD_ENOUGH = 11
 
@@ -83,7 +85,19 @@ export type OpsOrder = {
   feedAgeH: number | null
   nextLabel: string | null
   hoursToNext: number | null
+  /** Selected pickup slot start and the customer's promise end, epoch ms. */
+  pickupAt: number | null
+  promiseEnd: number | null
+  customer: string | null
+  driverId: string | null
   risk: Risk
+  /** Why a person is needed, in the case's own words. Null when nothing is. */
+  why: Why | null
+  next: NextDecision | null
+  /** Who said and did what, oldest first. */
+  story: StoryItem[]
+  /** Pickup and delivery: will someone be there. */
+  handover: HandoverEnd[]
 }
 
 export type OpsEvent = {
@@ -92,6 +106,8 @@ export type OpsEvent = {
   cmd: string
   orderId: string | null
   toState: string | null
+  /** Set on live events, which say what happened in their own words. */
+  text?: string
 }
 
 export type OpsModel = {
@@ -101,6 +117,8 @@ export type OpsModel = {
   orders: OpsOrder[]
   events: OpsEvent[]
 }
+
+const ms = (iso: string | null | undefined) => (iso ? new Date(iso).getTime() : null)
 
 function actorOf(type: string): OpsEvent['actor'] {
   return type === 'operator' || type === 'driver' || type === 'agent' ? type : 'other'
@@ -131,6 +149,9 @@ export function buildOps(data: Dataset = load()): OpsModel {
   }
 
   const now = SNAPSHOT_AT.getTime()
+  const customers = new Map(data.customers.map((c) => [c.id, c.display_name ?? c.name ?? null]))
+  const windowOf = (orderId: string, purpose: string) =>
+    data.timeWindows.find((w) => w.order_id === orderId && w.is_selected && w.purpose === purpose) ?? null
 
   const orders: OpsOrder[] = data.orders.map((o) => {
     const from = addr.get(o.pickup_address_id)
@@ -144,6 +165,8 @@ export function buildOps(data: Dataset = load()): OpsModel {
     const alerts = data.alerts
       .filter((a) => a.order_id === o.id && a.status !== 'RESOLVED')
       .map((a) => ({ signal: a.signal, severity: a.severity, status: a.status, summary: a.summary }))
+
+    const told = storyOf(o.id, c, data)
 
     const risk: Risk =
       c?.tone === 'critical'
@@ -181,7 +204,15 @@ export function buildOps(data: Dataset = load()): OpsModel {
       feedAgeH: fix ? (now - new Date(fix.observed_at).getTime()) / 3_600_000 : null,
       nextLabel: t?.nextLabel ?? null,
       hoursToNext: t?.hoursToNext ?? null,
+      pickupAt: ms(windowOf(o.id, 'SELECTED_PICKUP_SLOT')?.start_at),
+      promiseEnd: ms(windowOf(o.id, 'CUSTOMER_DELIVERY_PROMISE')?.end_at),
+      customer: customers.get(o.customer_id) ?? null,
+      driverId: asg?.driver_id ?? null,
       risk,
+      why: told.why,
+      next: told.next,
+      story: told.story,
+      handover: handoverOf(o.id, data),
     }
   })
 
