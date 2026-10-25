@@ -342,3 +342,37 @@ export function loadRoute() {
   }
   return routeData
 }
+
+export type Site = {
+  id: string
+  name: string | null
+  timezone: string | null
+  opening_hours: { mon_fri?: string | null; sat?: string | null; sun?: string | null } | null
+  advance_notice_minutes: number | null
+}
+export type Endpoint = {
+  order_id: string
+  boundary: 'PICKUP' | 'DELIVERY'
+  site_id: string | null
+  address_id: string
+  access_status: string
+  access_instruction: string | null
+  contact_name: string | null
+  contact_role: string | null
+  contact_status: string
+  last_confirmed_at: string | null
+  last_confirmed_source: string | null
+}
+
+/** Sites and the per-order handover details, loaded only where a handover is checked. */
+let handoverData: { sites: Map<string, Site>; endpoints: Endpoint[] } | null = null
+
+export function loadHandover() {
+  if (!handoverData) {
+    handoverData = {
+      sites: new Map(read<Site>('sites').map((s) => [s.id, s])),
+      endpoints: read<Endpoint>('order_endpoint_details'),
+    }
+  }
+  return handoverData
+}

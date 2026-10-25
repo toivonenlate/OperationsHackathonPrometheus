@@ -73,8 +73,25 @@ body {
 }
 .ops-flow { animation: ops-flow 1.2s linear infinite; }
 .ops-pulse { animation: ops-pulse 2s ease-out infinite; }
+
+/* BahnBot's suggestions: a ring that keeps calling while one is fresh, and a
+   card that slides in when it arrives. */
+@keyframes ops-call {
+  0% { r: 8; opacity: 0.8; }
+  100% { r: 20; opacity: 0; }
+}
+@keyframes ops-in {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@keyframes ops-blink {
+  50% { opacity: 0.35; }
+}
+.ops-call { animation: ops-call 1.4s ease-out infinite; }
+.ops-in { animation: ops-in 0.28s ease-out both; }
+.ops-blink { animation: ops-blink 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .ops-flow, .ops-pulse { animation: none; }
+  .ops-flow, .ops-pulse, .ops-call, .ops-in, .ops-blink { animation: none; }
 }
 
 /* MapLibre's controls, in the BahnOS tokens. */

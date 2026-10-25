@@ -11,9 +11,24 @@ import { Suspense, use, useCallback, useEffect, useLayoutEffect, useMemo, useRef
 import type { LngLatBoundsLike, Map as Basemap } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type { OpsEvent, OpsModel, OpsOrder, Risk } from '../../lib/ops'
+import type { NextDecision } from '../../lib/story'
+import type { Level as HandoverLevel } from '../../lib/handover'
 import { MARKETS, type MarketCode, type NewsKind, type Watch, localDay } from '../../lib/markets'
-import { commandName, codeName } from '../../lib/labels'
+import { codeName, commandName, deskName } from '../../lib/labels'
+import type { Decision, LiveState, Suggestion } from '../../lib/live'
+import { useLive } from '../../lib/use-live'
 import { Icon, type IconName } from '../components/icons'
+import {
+  type Act,
+  BOT,
+  DecidedList,
+  FRESH_MS,
+  LiveBar,
+  SuggestionCard,
+  SuggestionQueue,
+  type Toast,
+  Toasts,
+} from './live-ui'
 
 /* ---------------------------------------------------------------- tokens */
 
@@ -145,6 +160,7 @@ type Filters = {
   cases: boolean
   alerts: boolean
   ferry: boolean
+  handover: boolean
 }
 
 const NO_FILTERS: Filters = {
@@ -154,6 +170,7 @@ const NO_FILTERS: Filters = {
   cases: false,
   alerts: false,
   ferry: false,
+  handover: false,
 }
 
 function matches(o: OpsOrder, f: Filters): boolean {
@@ -162,6 +179,7 @@ function matches(o: OpsOrder, f: Filters): boolean {
   if (f.cases && !o.caseKey) return false
   if (f.alerts && !o.alerts.length) return false
   if (f.ferry && !o.ferry) return false
+  if (f.handover && !o.handover.some((h) => h.flagged)) return false
   if (f.q) {
     const q = f.q.toLowerCase()
     const hay = [o.ref, o.from, o.to, o.driver, o.vehicle, o.caseTitle].join(' ').toLowerCase()
@@ -170,22 +188,116 @@ function matches(o: OpsOrder, f: Filters): boolean {
   return true
 }
 
+/* ---------------------------------------------------------------- live */
+
+/** The snapshot model with the live layer laid over it: positions, status,
+ *  risk and the story move; the order's identity and its case do not. */
+function withLive(model: OpsModel, live: LiveState | null): OpsModel {
+  if (!live) return model
+  const ahead = (live.simNow - model.snapshot) / HOUR
+  const pending = pendingByOrder(live.suggestions)
+  const orders = model.orders.map((o): OpsOrder => {
+    const l = live.orders[o.id]
+    if (!l) return o
+    const top = pending.get(o.id)?.[0]
+    const watched = top && top.source === 'watch' && top.approval !== 'AGENT_SENDS'
+    return {
+      ...o,
+      status: l.status,
+      lane: l.lane,
+      progress: l.progress,
+      remainingKm: l.remainingKm,
+      eta: l.eta ? new Date(l.eta).toISOString() : null,
+      feedAgeH: l.fixAt !== null ? (live.simNow - l.fixAt) / HOUR : o.feedAgeH,
+      hoursToNext: o.hoursToNext !== null ? o.hoursToNext - ahead : null,
+      risk: l.risk,
+      caseBadge: l.settled ? 'Settled' : o.caseBadge,
+      why: l.settled
+        ? null
+        : (o.why ?? (watched ? { headline: top.title, detail: top.because, blockedOn: null } : null)),
+      next: top
+        ? { title: top.title, because: top.because, who: top.approval, owner: top.approver, scope: null }
+        : l.settled
+          ? null
+          : o.next,
+      story: live.story[o.id] ? [...o.story, ...live.story[o.id]] : o.story,
+    }
+  })
+  return { ...model, snapshot: live.simNow, orders, events: [...model.events, ...live.events] }
+}
+
+function pendingByOrder(suggestions: Suggestion[]): Map<string, Suggestion[]> {
+  const m = new Map<string, Suggestion[]>()
+  for (const s of suggestions) for (const id of s.orderIds) m.set(id, [...(m.get(id) ?? []), s])
+  return m
+}
+
 /* ================================================================ console */
 
-export default function Console({ model, watch }: { model: OpsModel; watch: Promise<Watch> }) {
+export default function Console({ model: snapshot, watch }: { model: OpsModel; watch: Promise<Watch> }) {
   const [filters, setFilters] = useState<Filters>(NO_FILTERS)
   const [range, setRange] = useState<[number, number] | null>(null)
   const [selected, setSelected] = useState<Selection>(null)
+  const [tab, setTab] = useState<'queue' | 'orders'>('queue')
+  const [toasts, setToasts] = useState<Toast[]>([])
+
+  const { state: live, online, act } = useLive()
+  const model = useMemo(() => withLive(snapshot, live), [snapshot, live])
+  const suggestions = useMemo(() => live?.suggestions ?? [], [live])
+  const pending = useMemo(() => pendingByOrder(suggestions), [suggestions])
+  const decisions = useMemo(() => live?.decisions ?? [], [live])
+
+  const done = useCallback(
+    (text: string) => setToasts((t) => [...t, { key: `done:${Date.now()}`, kind: 'done' as const, text }].slice(-4)),
+    [],
+  )
+  const dismiss = useCallback((key: string) => setToasts((t) => t.filter((x) => x.key !== key)), [])
+
+  // A suggestion BahnBot raises while you watch comes onto the map as a toast.
+  // The backlog that was there when the page opened does not.
+  const seen = useRef<Set<string> | null>(null)
+  useEffect(() => {
+    if (!live) return
+    const ids = live.suggestions.map((s) => s.id)
+    if (!seen.current) {
+      seen.current = new Set(ids)
+      return
+    }
+    const fresh = live.suggestions.filter((s) => !seen.current!.has(s.id))
+    for (const id of ids) seen.current.add(id)
+    const open = new Set(ids)
+    setToasts((t) => {
+      const kept = t.filter((x) => x.kind === 'done' || open.has(x.s.id))
+      const added = fresh.map((s): Toast => ({ key: s.id, kind: 'suggestion', s }))
+      return kept.length === t.length && !added.length ? t : [...kept, ...added].slice(-4)
+    })
+  }, [live])
+
+  const selPending = useMemo(
+    () => (selected?.kind === 'order' ? (pending.get(selected.id) ?? []) : []),
+    [selected, pending],
+  )
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      if (selected) setSelected(null)
-      else if (range) setRange(null)
+      const typing = e.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key === 'Escape') {
+        if (selected) setSelected(null)
+        else if (range) setRange(null)
+      } else if ((e.key === 'a' || e.key === 'r') && selPending[0]) {
+        const s = selPending[0]
+        const verdict = e.key === 'a' ? 'approved' : 'rejected'
+        act({ type: 'decide', id: s.id, verdict }).then((r) => {
+          if (r.ok) done(`${verdict === 'rejected' ? 'Stopped' : 'Approved'} · ${s.title}`)
+        })
+      } else if (e.key === 'p' && live) {
+        act({ type: 'control', paused: !live.paused })
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selected, range])
+  }, [selected, range, selPending, act, done, live])
 
   const orderById = useMemo(() => new Map(model.orders.map((o) => [o.id, o])), [model])
 
@@ -222,9 +334,12 @@ export default function Console({ model, watch }: { model: OpsModel; watch: Prom
 
   const pick = (id: string) =>
     setSelected((s) => (s?.kind === 'order' && s.id === id ? null : { kind: 'order', id }))
+  const open = useCallback((id: string) => setSelected({ kind: 'order', id }), [])
+  const refOf = useCallback((id: string) => orderById.get(id)?.ref ?? id, [orderById])
+  const now = model.snapshot
 
   const anyFilter =
-    filters.q || filters.lanes.size || filters.scope !== 'ALL' || filters.cases || filters.alerts || filters.ferry
+    filters.q || filters.lanes.size || filters.scope !== 'ALL' || filters.cases || filters.alerts || filters.ferry || filters.handover
 
   return (
     <div className="text-body">
@@ -234,9 +349,7 @@ export default function Console({ model, watch }: { model: OpsModel; watch: Prom
           <h1 className="font-display text-[29px] font-bold leading-[1.1] tracking-[-0.025em] text-label">
             Ops map
           </h1>
-          <p className="mt-[7px] text-[14px] leading-[1.5] text-secondary">
-            {model.orders.length} orders, as of the snapshot
-          </p>
+          <LiveBar live={live} online={online} act={act} orders={model.orders.length} />
         </div>
         <Clocks
           watch={watch}
@@ -247,6 +360,8 @@ export default function Console({ model, watch }: { model: OpsModel; watch: Prom
           orders={touched ? visible.filter((o) => touched.has(o.id)) : visible}
           filters={filters}
           setFilters={setFilters}
+          waiting={suggestions.length}
+          showQueue={() => setTab('queue')}
         />
       </header>
 
@@ -259,14 +374,61 @@ export default function Console({ model, watch }: { model: OpsModel; watch: Prom
       />
 
       <div className="mt-3 grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)_340px]">
-        <OrderList
-          orders={visible}
-          touched={touched}
-          selectedId={selOrder?.id ?? null}
-          pick={pick}
-        />
+        <section className={`${PANEL} flex h-[300px] flex-col lg:h-[640px]`}>
+          <div role="tablist" className="flex border-b border-hair">
+            {(
+              [
+                ['queue', 'BahnBot', suggestions.length],
+                ['orders', 'Orders', visible.length],
+              ] as const
+            ).map(([key, label, n]) => (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={tab === key}
+                onClick={() => setTab(key)}
+                className={`${CAPTION} flex-1 justify-center px-[10px] py-[9px] transition-colors ${tab === key ? 'text-label shadow-[inset_0_-2px_0_var(--color-label)]' : 'hover:text-secondary'}`}
+              >
+                <span style={key === 'queue' ? { color: BOT } : undefined}>
+                  <Icon name={key === 'queue' ? 'agent' : 'menu'} size={12} />
+                </span>
+                {label}
+                <span
+                  className={`rounded-full px-[6px] tabular-nums ${key === 'queue' && n ? 'text-canvas' : ''}`}
+                  style={key === 'queue' && n ? { background: BOT } : undefined}
+                >
+                  {n}
+                </span>
+              </button>
+            ))}
+          </div>
+          {tab === 'queue' ? (
+            <SuggestionQueue
+              suggestions={suggestions}
+              refOf={refOf}
+              act={act}
+              now={now}
+              selectedId={selOrder?.id ?? null}
+              open={open}
+              onDone={done}
+            />
+          ) : (
+            <OrderList
+              orders={visible}
+              touched={touched}
+              selectedId={selOrder?.id ?? null}
+              pick={pick}
+              pending={pending}
+            />
+          )}
+        </section>
         <MapPanel
           model={model}
+          pending={pending}
+          toasts={
+            <Toasts toasts={toasts} dismiss={dismiss} refOf={refOf} act={act} open={open} onDone={done} />
+          }
           orders={visible}
           scope={filters.scope}
           setScope={(scope) => setFilters((f) => ({ ...f, scope }))}
@@ -283,6 +445,16 @@ export default function Console({ model, watch }: { model: OpsModel; watch: Prom
           setSelected={setSelected}
           pick={pick}
           toggleLane={toggleLane}
+          live={{
+            act,
+            now,
+            mine: selPending,
+            decisions,
+            waiting: suggestions,
+            refOf,
+            done,
+            showQueue: () => setTab('queue'),
+          }}
         />
       </div>
 
@@ -290,6 +462,7 @@ export default function Console({ model, watch }: { model: OpsModel; watch: Prom
         <Timeline
           events={events}
           snapshot={model.snapshot}
+          origin={snapshot.snapshot}
           range={range}
           setRange={setRange}
           marks={selOrder ? model.events.filter((e) => e.orderId === selOrder.id) : []}
@@ -315,8 +488,10 @@ export default function Console({ model, watch }: { model: OpsModel; watch: Prom
 
       <p className="mt-4 font-mono text-[10.5px] leading-[1.6] text-tertiary">
         Lanes join pickup and delivery city centres. A moving car sits at its last
-        reported progress along its lane, not at a known position. Esc clears the
-        selection, then the time window.
+        reported progress along its lane, not at a known position. Everything after
+        the snapshot is a simulation played forward from the records, shared by every
+        open tab. Keys: A approves and R stops the selected order&apos;s first
+        suggestion, P pauses, Esc clears the selection, then the time window.
       </p>
     </div>
   )
@@ -328,10 +503,14 @@ function Kpis({
   orders,
   filters,
   setFilters,
+  waiting,
+  showQueue,
 }: {
   orders: OpsOrder[]
   filters: Filters
   setFilters: React.Dispatch<React.SetStateAction<Filters>>
+  waiting: number
+  showQueue: () => void
 }) {
   const moving = orders.filter((o) => o.status === 'IN_TRANSIT')
   const cases = new Set(orders.map((o) => o.caseKey).filter(Boolean)).size
@@ -343,9 +522,16 @@ function Kpis({
     label: string
     value: string
     tone?: string
+    colour?: string
     on?: boolean
     toggle?: () => void
   }[] = [
+    {
+      label: 'BahnBot',
+      value: String(waiting),
+      colour: waiting ? BOT : undefined,
+      toggle: showQueue,
+    },
     { label: 'Orders', value: String(orders.length) },
     { label: 'Moving', value: String(moving.length), tone: 'text-teal' },
     {
@@ -367,12 +553,15 @@ function Kpis({
   ]
 
   return (
-    <dl className="ml-auto grid grid-cols-3 overflow-hidden rounded-[10px] border border-hair bg-hair sm:grid-cols-6" style={{ gap: 1 }}>
+    <dl className="ml-auto grid grid-cols-4 overflow-hidden rounded-[10px] border border-hair bg-hair sm:grid-cols-7" style={{ gap: 1 }}>
       {cells.map((c) => {
         const body = (
           <>
             <dt className="font-mono text-[10px] uppercase tracking-[0.08em] text-tertiary">{c.label}</dt>
-            <dd className={`mt-[3px] font-mono text-[19px] font-semibold tabular-nums leading-none ${c.tone ?? 'text-label'}`}>
+            <dd
+              className={`mt-[3px] font-mono text-[19px] font-semibold tabular-nums leading-none ${c.tone ?? 'text-label'}`}
+              style={c.colour ? { color: c.colour } : undefined}
+            >
               {c.value}
             </dd>
           </>
@@ -383,7 +572,13 @@ function Kpis({
             type="button"
             onClick={c.toggle}
             aria-pressed={c.on}
-            title={c.on ? 'Showing only these. Click to show all.' : 'Click to show only these'}
+            title={
+              c.label === 'BahnBot'
+                ? 'Suggestions waiting on you. Click to see the queue.'
+                : c.on
+                  ? 'Showing only these. Click to show all.'
+                  : 'Click to show only these'
+            }
             className={`min-w-[76px] px-[11px] py-[8px] text-left transition-colors ${c.on ? 'bg-birch shadow-[inset_0_-2px_0_var(--color-label)]' : 'bg-card hover:bg-birch'}`}
           >
             {body}
@@ -468,6 +663,13 @@ function FilterBar({
         <Icon name="ferry" size={12} />
         ferry
       </Chip>
+      <Chip on={filters.handover} onClick={() => setFilters((f) => ({ ...f, handover: !f.handover }))}>
+        <Icon name="handover" size={12} />
+        handover at risk
+        <span className="tabular-nums opacity-60">
+          {model.orders.filter((o) => o.handover.some((h) => h.flagged)).length}
+        </span>
+      </Chip>
       {anyFilter ? (
         <button
           type="button"
@@ -491,11 +693,13 @@ function OrderList({
   touched,
   selectedId,
   pick,
+  pending,
 }: {
   orders: OpsOrder[]
   touched: Set<string> | null
   selectedId: string | null
   pick: (id: string) => void
+  pending: Map<string, Suggestion[]>
 }) {
   const sorted = useMemo(
     () =>
@@ -518,12 +722,6 @@ function OrderList({
   }, [selectedId])
 
   return (
-    <section className={`${PANEL} flex h-[300px] flex-col lg:h-[640px]`}>
-      <p className={`${CAPTION} border-b border-hair px-[12px] py-[9px]`}>
-        <Icon name="menu" size={12} />
-        Orders
-        <span className="ml-auto tabular-nums">{orders.length}</span>
-      </p>
       <ul ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
         {sorted.map((o) => {
           const on = o.id === selectedId
@@ -548,6 +746,16 @@ function OrderList({
                   <span className="flex items-baseline gap-[6px]">
                     <span className="font-mono text-[11.5px] text-label">{o.ref}</span>
                     {o.ferry ? <Icon name="ferry" size={11} className="self-center text-tertiary" /> : null}
+                    {o.handover.some((h) => h.flagged) ? (
+                      <span title="Handover at risk" className="self-center text-orange">
+                        <Icon name="handover" size={11} />
+                      </span>
+                    ) : null}
+                    {pending.get(o.id)?.length ? (
+                      <span title="BahnBot has a suggestion" className="self-center" style={{ color: BOT }}>
+                        <Icon name="agent" size={11} />
+                      </span>
+                    ) : null}
                     <span className="ml-auto font-mono text-[10px] uppercase text-tertiary">{o.lane}</span>
                   </span>
                   <span className="block truncate text-[11.5px] text-secondary">
@@ -562,7 +770,6 @@ function OrderList({
           <li className="px-[12px] py-[14px] text-[12px] text-secondary">No order matches these filters.</li>
         ) : null}
       </ul>
-    </section>
   )
 }
 
@@ -572,6 +779,8 @@ type Tip = { x: number; y: number; body: React.ReactNode } | null
 
 function MapPanel({
   model,
+  pending,
+  toasts,
   orders,
   scope,
   setScope,
@@ -581,6 +790,8 @@ function MapPanel({
   pick,
 }: {
   model: OpsModel
+  pending: Map<string, Suggestion[]>
+  toasts: React.ReactNode
   orders: OpsOrder[]
   scope: Scope
   setScope: (s: Scope) => void
@@ -637,15 +848,18 @@ function MapPanel({
 
   // The camera follows the scope, not the other filters: narrowing to "alerts"
   // should not fly the map away from what you were looking at.
-  const scopeBounds = useMemo(() => {
+  // Keyed on its value: a live frame is a new model every second, and must not
+  // fly the camera.
+  const boundsKey = useMemo(() => {
     const pts: [number, number][] = []
     for (const o of model.orders) {
       if (!inScope(o, scope)) continue
       if (model.cities[o.from]) pts.push(model.cities[o.from])
       if (model.cities[o.to]) pts.push(model.cities[o.to])
     }
-    return boundsOf(pts)
+    return JSON.stringify(boundsOf(pts))
   }, [model, scope])
+  const scopeBounds = useMemo(() => JSON.parse(boundsKey) as LngLatBoundsLike | null, [boundsKey])
 
   const fit = (animate = true) => {
     const map = mapRef.current
@@ -847,6 +1061,60 @@ function MapPanel({
               )
             })}
 
+          {/* BahnBot's suggestions, where they are about */}
+          {lanes
+            .filter(({ o }) => pending.get(o.id)?.length)
+            .map(({ o, arc: a }) => {
+              const list = pending.get(o.id)!
+              // Off the car, so the badge and the car never sit on each other.
+              const t = o.progress === null ? 0.5 : o.progress < 0.5 ? 0.78 : 0.22
+              const [x, y] = a.at(t)
+              const fresh = list.some((s) => s.raisedReal && Date.now() - s.raisedReal < FRESH_MS)
+              const dim = selOrder?.id !== o.id && ((touched && !touched.has(o.id)) || !focus(o))
+              return (
+                <g
+                  key={`bot-${o.id}`}
+                  data-wx={x}
+                  data-wy={y}
+                  opacity={dim ? 0.25 : 1}
+                  className="pointer-events-auto cursor-pointer"
+                  onMouseMove={(e) =>
+                    place(e, (
+                      <>
+                        <p className="font-mono text-[11.5px]" style={{ color: BOT }}>
+                          BahnBot · {o.ref}
+                        </p>
+                        {list.slice(0, 3).map((s) => (
+                          <p key={s.id} className="text-label">
+                            {s.title}
+                          </p>
+                        ))}
+                        <p className="text-tertiary">Click to review</p>
+                      </>
+                    ))
+                  }
+                  onMouseLeave={() => setTip(null)}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    pick(o.id)
+                  }}
+                >
+                  {fresh ? <circle r={8} fill="none" stroke={BOT} strokeWidth={2} className="ops-call" /> : null}
+                  <circle r={8} fill={BOT} stroke="var(--color-canvas)" strokeWidth={1.5} />
+                  <text
+                    y={3.4}
+                    textAnchor="middle"
+                    fontSize={9.5}
+                    fontWeight={700}
+                    className="pointer-events-none select-none font-mono"
+                    fill="#0f0e0b"
+                  >
+                    {list.length}
+                  </text>
+                </g>
+              )
+            })}
+
           {/* cities */}
           {[...cityStats.entries()].map(([name, s]) => {
             if (!model.cities[name]) return null
@@ -957,6 +1225,7 @@ function MapPanel({
       </div>
 
       <Legend />
+      {toasts}
 
       {tip ? (
         <div
@@ -982,6 +1251,10 @@ function Legend() {
       <li className="inline-flex items-center gap-[5px] text-[10.5px] text-secondary">
         <span className="h-0 w-[14px] border-t-2 border-dashed border-teal" />
         dashed = in transit
+      </li>
+      <li className="inline-flex items-center gap-[5px] text-[10.5px] text-secondary">
+        <span className="size-[9px] rounded-full" style={{ background: BOT }} />
+        BahnBot suggestion
       </li>
     </ul>
   )
@@ -1009,6 +1282,18 @@ function Bar({ value, max, colour }: { value: number; max: number; colour: strin
   )
 }
 
+type LiveProps = {
+  act: Act
+  now: number
+  /** Pending suggestions for the selected order. */
+  mine: Suggestion[]
+  decisions: Decision[]
+  waiting: Suggestion[]
+  refOf: (id: string) => string
+  done: (text: string) => void
+  showQueue: () => void
+}
+
 function Inspector({
   model,
   orders,
@@ -1017,6 +1302,7 @@ function Inspector({
   setSelected,
   pick,
   toggleLane,
+  live,
 }: {
   model: OpsModel
   orders: OpsOrder[]
@@ -1025,6 +1311,7 @@ function Inspector({
   setSelected: (s: Selection) => void
   pick: (id: string) => void
   toggleLane: (lane: string) => void
+  live: LiveProps
 }) {
   return (
     <section className={`${PANEL} flex max-h-[640px] flex-col lg:h-[640px]`}>
@@ -1046,21 +1333,41 @@ function Inspector({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-[14px] py-[12px]">
         {selOrder ? (
-          <OrderDetail o={selOrder} model={model} />
+          <OrderDetail key={selOrder.id} o={selOrder} live={live} />
         ) : selected?.kind === 'city' ? (
           <CityDetail name={selected.name} orders={orders} pick={pick} />
         ) : (
-          <Overview orders={orders} pick={pick} toggleLane={toggleLane} setSelected={setSelected} />
+          <Overview orders={orders} pick={pick} toggleLane={toggleLane} setSelected={setSelected} live={live} />
         )}
       </div>
     </section>
   )
 }
 
-function OrderDetail({ o, model }: { o: OpsOrder; model: OpsModel }) {
+// Who acts on the next decision. Same words and tones as the case page.
+const WHO: Record<NextDecision['who'], { label: string; icon: IconName; tone: string }> = {
+  AGENT_SENDS: { label: 'BahnBot can do it', icon: 'agent', tone: 'text-teal' },
+  NEEDS_APPROVAL: { label: 'Needs approval', icon: 'shield', tone: 'text-orange' },
+  NEEDS_PERSON: { label: 'Needs a person', icon: 'person', tone: 'text-red' },
+}
+
+const LEVEL: Record<HandoverLevel, { icon: IconName; tone: string; label: string }> = {
+  block: { icon: 'blocked', tone: 'text-red', label: 'Blocked' },
+  risk: { icon: 'warning', tone: 'text-orange', label: 'Unconfirmed' },
+  unknown: { icon: 'info', tone: 'text-tertiary', label: 'Unknown' },
+  ok: { icon: 'confirmed', tone: 'text-green', label: 'Ready' },
+}
+
+const STORY_SHOWN = 6
+
+function OrderDetail({ o, live }: { o: OpsOrder; live: LiveProps }) {
   const r = RISK[o.risk]
   const stale = o.status === 'IN_TRANSIT' && o.feedAgeH !== null && o.feedAgeH > 6
-  const history = model.events.filter((e) => e.orderId === o.id).slice(-6).reverse()
+  const [all, setAll] = useState(false)
+  const story = all ? o.story : o.story.slice(-STORY_SHOWN)
+  const who = o.next ? WHO[o.next.who] : null
+  const decided = live.decisions.filter((d) => d.orderIds.includes(o.id))
+
   return (
     <div>
       <div className="flex items-center gap-[8px]">
@@ -1068,38 +1375,201 @@ function OrderDetail({ o, model }: { o: OpsOrder; model: OpsModel }) {
         <span className="rounded-[5px] bg-fill px-[6px] py-[1px] font-mono text-[10px] uppercase text-secondary">
           {o.lane}
         </span>
+        <span className="ml-auto truncate text-[11.5px] text-secondary">
+          {o.from} → {o.to}
+        </span>
       </div>
-      <p className="mt-[5px] inline-flex items-center gap-[5px] text-[12.5px]" style={{ color: r.colour }}>
-        <Icon name={r.icon} size={13} />
-        {o.caseBadge ?? r.label}
-      </p>
 
-      <div className="mt-[12px] rounded-[8px] border border-hair bg-birch px-[11px] py-[9px]">
-        <p className="flex items-center gap-[7px] text-[13px] text-label">
-          {o.from}
-          <span className="font-mono text-[10px] text-tertiary">{o.fromCountry}</span>
-          <Icon name={o.ferry ? 'ferry' : 'arrow-right'} size={13} className="text-tertiary" />
-          {o.to}
-          <span className="font-mono text-[10px] text-tertiary">{o.toCountry}</span>
+      {/* ---- why ---- */}
+      {o.why ? (
+        <div
+          className={`mt-[12px] rounded-[8px] border px-[11px] py-[9px] ${o.risk === 'critical' ? 'border-red/40 bg-red/[0.06]' : 'border-orange/40 bg-orange/[0.06]'}`}
+        >
+          <p className={CAPTION}>
+            <Icon name={r.icon} size={11} className={o.risk === 'critical' ? 'text-red' : 'text-orange'} />
+            Why it needs a person
+          </p>
+          <p className="mt-[5px] text-[13px] font-semibold text-label">{o.why.headline}</p>
+          {o.why.detail ? <p className="mt-[3px] text-[12px] leading-[1.45] text-body">{o.why.detail}</p> : null}
+          {o.why.blockedOn ? (
+            <p className="mt-[5px] text-[11.5px] leading-[1.4] text-secondary">
+              <span className="text-tertiary">Waiting on </span>
+              {o.why.blockedOn.replace(/^./, (c) => c.toLowerCase())}
+            </p>
+          ) : null}
+        </div>
+      ) : (
+        <p className="mt-[12px] inline-flex items-center gap-[6px] text-[12.5px] text-green">
+          <Icon name="confirmed" size={13} />
+          Nothing here needs a person.
         </p>
-        {o.progress !== null ? (
-          <div className="mt-[8px] flex items-center gap-[8px]">
-            <Bar value={o.progress} max={1} colour={r.colour} />
-            <span className="font-mono text-[11px] tabular-nums text-secondary">
-              {Math.round(o.progress * 100)}%
-            </span>
-          </div>
+      )}
+
+      {/* ---- what BahnBot suggests, and what was decided ---- */}
+      {live.mine.length ? (
+        <div className="mt-[8px] space-y-[8px]">
+          {live.mine.map((s, i) => (
+            <SuggestionCard
+              key={s.id}
+              s={s}
+              act={live.act}
+              now={live.now}
+              refs={s.orderIds.map(live.refOf)}
+              onDone={live.done}
+              primary={i === 0}
+            />
+          ))}
+        </div>
+      ) : null}
+      {decided.length ? (
+        <div className="mt-[10px]">
+          <p className={CAPTION}>
+            <Icon name="check" size={11} />
+            Decided here
+          </p>
+          <DecidedList decisions={decided} now={live.now} />
+        </div>
+      ) : null}
+
+      {/* ---- the next decision, when nothing live covers it ---- */}
+      {!live.mine.length && o.next && who ? (
+        <div className="mt-[8px] rounded-[8px] border border-hair bg-birch px-[11px] py-[9px]">
+          <p className={CAPTION}>
+            <Icon name="arrow-right" size={11} />
+            Next decision
+            {o.next.scope ? <span className="normal-case tracking-normal">· {o.next.scope}</span> : null}
+          </p>
+          <p className="mt-[5px] text-[13px] font-medium leading-[1.35] text-label">{o.next.title}</p>
+          {o.next.because ? (
+            <p className="mt-[3px] line-clamp-3 text-[11.5px] leading-[1.45] text-secondary">{o.next.because}</p>
+          ) : null}
+          <p className={`mt-[6px] inline-flex items-center gap-[5px] text-[11.5px] ${who.tone}`}>
+            <Icon name={who.icon} size={12} />
+            {who.label}
+            {o.next.owner ? <span className="text-secondary">· {deskName(o.next.owner)}</span> : null}
+          </p>
+        </div>
+      ) : null}
+
+      {/* ---- what happened ---- */}
+      <div className="mt-[14px]">
+        <p className={CAPTION}>
+          <Icon name="history" size={11} />
+          What happened
+          <span className="ml-auto tabular-nums">{o.story.length}</span>
+        </p>
+        {o.story.length > STORY_SHOWN ? (
+          <button
+            type="button"
+            onClick={() => setAll(!all)}
+            className="mt-[4px] font-mono text-[10.5px] text-teal hover:underline"
+          >
+            {all ? 'Show the latest only' : `Show ${o.story.length - STORY_SHOWN} earlier`}
+          </button>
         ) : null}
+        <ol className="mt-[6px] border-l border-hair">
+          {story.map((s, i) => (
+            <li key={i} className="relative pb-[9px] pl-[12px] last:pb-0">
+              <span
+                className="absolute -left-[4px] top-[5px] size-[7px] rounded-full ring-2 ring-card"
+                style={{ background: ACTOR_COLOUR[s.actor] }}
+              />
+              <p className="flex items-baseline gap-[6px] text-[11px]">
+                <span className="truncate font-medium text-label">{s.who}</span>
+                {s.kind === 'said' && s.internal ? (
+                  <span className="rounded-[4px] bg-fill px-[4px] font-mono text-[9.5px] uppercase text-tertiary">internal</span>
+                ) : null}
+                {s.language && s.language !== 'en' ? (
+                  <span className="font-mono text-[9.5px] uppercase text-tertiary">{s.language}</span>
+                ) : null}
+                <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-tertiary">{stamp(s.t)}</span>
+              </p>
+              <p
+                className={`mt-[1px] text-[12px] leading-[1.4] ${
+                  s.kind === 'said'
+                    ? 'text-body'
+                    : s.kind === 'raised'
+                      ? 'text-orange'
+                      : s.kind === 'decided'
+                        ? 'text-label'
+                        : 'text-secondary'
+                }`}
+              >
+                {s.kind === 'said' ? `“${s.text}”` : s.text}
+              </p>
+            </li>
+          ))}
+          {!o.story.length ? <li className="pl-[12px] text-[12px] text-secondary">Nothing recorded yet.</li> : null}
+        </ol>
       </div>
 
-      <dl className="mt-[10px]">
+      {/* ---- will someone be there ---- */}
+      <div className="mt-[14px]">
+        <p className={CAPTION}>
+          <Icon name="handover" size={11} />
+          Handover
+        </p>
+        <div className="mt-[6px] space-y-[6px]">
+          {o.handover.map((h) => {
+            const lv = LEVEL[h.level]
+            const name = h.boundary === 'PICKUP' ? 'Pickup' : 'Delivery'
+            if (h.done) {
+              return (
+                <p key={h.boundary} className="flex items-center gap-[6px] px-[2px] text-[11.5px] text-secondary">
+                  <Icon name="check" size={12} className="text-green" />
+                  {name} done · {h.place}
+                </p>
+              )
+            }
+            return (
+              <div
+                key={h.boundary}
+                className={`rounded-[8px] border px-[10px] py-[8px] ${h.next ? 'border-sand bg-birch' : 'border-hair'}`}
+              >
+                <p className="flex items-baseline gap-[6px] text-[12px]">
+                  <Icon name={lv.icon} size={12} className={`self-center ${lv.tone}`} />
+                  <span className="font-medium text-label">{name}</span>
+                  <span className="min-w-0 truncate text-secondary">{h.place}</span>
+                  {h.local ? (
+                    <span className="ml-auto shrink-0 font-mono text-[10.5px] tabular-nums text-secondary">{h.local}</span>
+                  ) : null}
+                </p>
+                <p className="mt-[1px] pl-[18px] text-[10.5px] text-tertiary">
+                  {h.city}
+                  {h.arriveSource ? ` · local time, from the ${h.arriveSource}` : ''}
+                </p>
+                {h.next ? (
+                  <ul className="mt-[5px] space-y-[3px] pl-[18px]">
+                    {h.checks.map((c, i) => (
+                      <li key={i} className="flex gap-[6px] text-[11.5px] leading-[1.4]">
+                        <Icon name={LEVEL[c.level].icon} size={11} className={`mt-[2px] shrink-0 ${LEVEL[c.level].tone}`} />
+                        <span className={c.level === 'ok' ? 'text-secondary' : 'text-body'}>{c.text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* ---- the facts ---- */}
+      <dl className="mt-[12px]">
+        {o.progress !== null ? (
+          <Row k="Progress">
+            <span className="flex items-center gap-[8px]">
+              <Bar value={o.progress} max={1} colour={r.colour} />
+              <span className="font-mono text-[11px] tabular-nums text-secondary">{Math.round(o.progress * 100)}%</span>
+            </span>
+          </Row>
+        ) : null}
         <Row k="Route">
           {o.routeKind.toLowerCase()}
           {o.distanceKm ? ` · ${o.distanceKm.toLocaleString('en-GB')} km` : ''}
           {o.ferry ? ' · ferry' : ''}
         </Row>
         {o.remainingKm !== null ? <Row k="To go">{o.remainingKm.toLocaleString('en-GB')} km</Row> : null}
-        {o.eta ? <Row k="Driver ETA">{stamp(new Date(o.eta).getTime())} UTC</Row> : null}
         {o.feedAgeH !== null && o.status === 'IN_TRANSIT' ? (
           <Row k="Last fix">
             <span className={stale ? 'text-orange' : undefined}>
@@ -1109,7 +1579,7 @@ function OrderDetail({ o, model }: { o: OpsOrder; model: OpsModel }) {
           </Row>
         ) : null}
         {o.nextLabel && o.hoursToNext !== null ? (
-          <Row k="Next">
+          <Row k="Deadline">
             {o.nextLabel}{' '}
             <span className={o.hoursToNext < 8 ? 'font-semibold text-red' : 'text-secondary'}>
               {hours(o.hoursToNext)}
@@ -1120,21 +1590,11 @@ function OrderDetail({ o, model }: { o: OpsOrder; model: OpsModel }) {
         <Row k="Car">{o.vehicle ?? <span className="text-tertiary">not recorded</span>}</Row>
       </dl>
 
-      {o.caseTitle ? (
-        <div className="mt-[12px] rounded-[8px] border border-red/40 bg-red/[0.06] px-[11px] py-[9px]">
-          <p className={CAPTION}>
-            <Icon name="warning" size={11} className="text-red" />
-            Case · score {o.caseScore}
-          </p>
-          <p className="mt-[4px] text-[12.5px] text-label">{o.caseTitle}</p>
-        </div>
-      ) : null}
-
       {o.alerts.length ? (
         <div className="mt-[12px]">
           <p className={CAPTION}>
             <Icon name="alert" size={11} />
-            Alerts
+            Open alerts
           </p>
           <ul className="mt-[5px] space-y-[5px]">
             {o.alerts.map((a) => (
@@ -1147,28 +1607,11 @@ function OrderDetail({ o, model }: { o: OpsOrder; model: OpsModel }) {
                   </span>
                   {codeName(a.signal)}
                 </p>
-                <p className="mt-[2px] text-[11.5px] leading-[1.4] text-secondary">{a.summary}</p>
               </li>
             ))}
           </ul>
         </div>
       ) : null}
-
-      <div className="mt-[12px]">
-        <p className={CAPTION}>
-          <Icon name="history" size={11} />
-          Latest activity
-        </p>
-        <ul className="mt-[5px]">
-          {history.map((e, i) => (
-            <li key={i} className="flex items-baseline gap-[7px] py-[3px] text-[11.5px]">
-              <span className="size-[6px] shrink-0 self-center rounded-[2px]" style={{ background: ACTOR_COLOUR[e.actor] }} />
-              <span className="min-w-0 flex-1 truncate text-body">{commandName(e.cmd)}</span>
-              <span className="font-mono text-[10.5px] tabular-nums text-tertiary">{stamp(e.t)}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
 
       <Link
         href={o.caseKey ? `/case/${o.caseKey.replace(':', '/')}` : `/case/order/${o.id}`}
@@ -1232,12 +1675,19 @@ function Overview({
   pick,
   toggleLane,
   setSelected,
+  live,
 }: {
   orders: OpsOrder[]
   pick: (id: string) => void
   toggleLane: (lane: string) => void
   setSelected: (s: Selection) => void
+  live: LiveProps
 }) {
+  const tiers = (['NEEDS_PERSON', 'NEEDS_APPROVAL', 'AGENT_SENDS'] as const).map((k) => ({
+    k,
+    n: live.waiting.filter((s) => s.approval === k).length,
+  }))
+  const fresh = live.waiting.filter((s) => s.source === 'watch').length
   const byLane = LANES.map((l) => ({ l, n: orders.filter((o) => o.lane === l).length })).filter((x) => x.n)
   const maxLane = Math.max(...byLane.map((x) => x.n), 1)
 
@@ -1263,6 +1713,11 @@ function Overview({
     return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)
   }, [orders])
 
+  // Soonest first; a passed slot has negative hours and leads.
+  const handovers = orders
+    .flatMap((o) => o.handover.filter((h) => h.flagged).map((h) => ({ o, h })))
+    .sort((a, b) => (a.h.hoursToArrive ?? 0) - (b.h.hoursToArrive ?? 0))
+
   const soonest = orders
     .filter((o) => o.hoursToNext !== null && o.hoursToNext > 0 && o.status !== 'DELIVERED')
     .sort((a, b) => a.hoursToNext! - b.hoursToNext!)
@@ -1270,6 +1725,111 @@ function Overview({
 
   return (
     <div className="space-y-[18px]">
+      {/* What needs doing comes first; the shape of the network after it. */}
+      <div>
+        <p className={CAPTION}>
+          <span style={{ color: BOT }}>
+            <Icon name="agent" size={11} />
+          </span>
+          Waiting on you
+          <span className="ml-auto tabular-nums">{live.waiting.length}</span>
+        </p>
+        <button
+          type="button"
+          onClick={live.showQueue}
+          className="mt-[6px] w-full rounded-[8px] border border-hair px-[10px] py-[8px] text-left hover:border-sand hover:bg-birch"
+        >
+          <span className="flex gap-[14px]">
+            {tiers.map(({ k, n }) => (
+              <span key={k} className="min-w-0">
+                <span className={`block font-mono text-[18px] font-semibold tabular-nums leading-none ${n ? WHO[k].tone : 'text-tertiary'}`}>
+                  {n}
+                </span>
+                <span className="mt-[3px] block text-[10.5px] leading-[1.25] text-secondary">
+                  {k === 'NEEDS_PERSON' ? 'need a person' : k === 'NEEDS_APPROVAL' ? 'need approval' : 'ready to send'}
+                </span>
+              </span>
+            ))}
+          </span>
+          <span className="mt-[7px] block text-[11px] text-tertiary">
+            {fresh ? `${fresh} raised live since the snapshot · ` : ''}Review the queue
+          </span>
+        </button>
+        {live.decisions.length ? (
+          <>
+            <p className={`${CAPTION} mt-[10px]`}>
+              Decided this session
+              <span className="ml-auto tabular-nums">{live.decisions.length}</span>
+            </p>
+            <DecidedList decisions={live.decisions.slice(0, 5)} now={live.now} refOf={live.refOf} pick={pick} />
+          </>
+        ) : null}
+      </div>
+
+      {handovers.length ? (
+        <div>
+          <p className={CAPTION}>
+            <Icon name="handover" size={11} />
+            Handovers at risk · next 48 h
+            <span className="ml-auto tabular-nums">{handovers.length}</span>
+          </p>
+          <ul className="mt-[5px]">
+            {handovers.slice(0, 6).map(({ o, h }) => {
+              const issue = h.checks.find((c) => c.level === h.level)
+              return (
+                <li key={`${o.id}${h.boundary}`}>
+                  <button
+                    type="button"
+                    onClick={() => pick(o.id)}
+                    className="w-full rounded-[5px] px-[3px] py-[4px] text-left hover:bg-birch"
+                  >
+                    <span className="flex items-baseline gap-[8px]">
+                      <span className={`self-center ${LEVEL[h.level].tone}`}>
+                        <Icon name={LEVEL[h.level].icon} size={11} />
+                      </span>
+                      <span className="font-mono text-[11.5px] text-label">{o.ref}</span>
+                      <span className="text-[11.5px] text-secondary">{h.boundary === 'PICKUP' ? 'pickup' : 'delivery'}</span>
+                      <span className="ml-auto font-mono text-[10.5px] tabular-nums text-secondary">{h.local}</span>
+                    </span>
+                    {issue ? (
+                      <span className="mt-[1px] block truncate pl-[19px] text-[11px] text-tertiary">{issue.text}</span>
+                    ) : null}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      ) : null}
+
+      <div>
+        <p className={CAPTION}>
+          <Icon name="clock" size={11} />
+          Next deadlines
+        </p>
+        <ul className="mt-[5px]">
+          {soonest.map((o) => (
+            <li key={o.id}>
+              <button
+                type="button"
+                onClick={() => pick(o.id)}
+                className="flex w-full items-baseline gap-[8px] rounded-[5px] px-[3px] py-[4px] text-left hover:bg-birch"
+              >
+                <span className="font-mono text-[11.5px] text-label">{o.ref}</span>
+                <span className="min-w-0 flex-1 truncate text-[11.5px] text-secondary">{o.nextLabel}</span>
+                <span
+                  className={`font-mono text-[11px] tabular-nums ${o.hoursToNext! < 8 ? 'font-semibold text-red' : 'text-secondary'}`}
+                >
+                  {hours(o.hoursToNext!)}
+                </span>
+              </button>
+            </li>
+          ))}
+          {!soonest.length ? <li className="text-[12px] text-secondary">Nothing due.</li> : null}
+        </ul>
+      </div>
+
+
       <div>
         <p className={CAPTION}>Pipeline</p>
         <ul className="mt-[6px] space-y-[3px]">
@@ -1323,33 +1883,6 @@ function Overview({
         </div>
       </div>
 
-      <div>
-        <p className={CAPTION}>
-          <Icon name="clock" size={11} />
-          Next deadlines
-        </p>
-        <ul className="mt-[5px]">
-          {soonest.map((o) => (
-            <li key={o.id}>
-              <button
-                type="button"
-                onClick={() => pick(o.id)}
-                className="flex w-full items-baseline gap-[8px] rounded-[5px] px-[3px] py-[4px] text-left hover:bg-birch"
-              >
-                <span className="font-mono text-[11.5px] text-label">{o.ref}</span>
-                <span className="min-w-0 flex-1 truncate text-[11.5px] text-secondary">{o.nextLabel}</span>
-                <span
-                  className={`font-mono text-[11px] tabular-nums ${o.hoursToNext! < 8 ? 'font-semibold text-red' : 'text-secondary'}`}
-                >
-                  {hours(o.hoursToNext!)}
-                </span>
-              </button>
-            </li>
-          ))}
-          {!soonest.length ? <li className="text-[12px] text-secondary">Nothing due.</li> : null}
-        </ul>
-      </div>
-
       <p className="text-[11.5px] leading-[1.5] text-tertiary">
         Click a lane, a city or a row to inspect it. Drag across the timeline to
         see only what moved in that window.
@@ -1367,12 +1900,15 @@ const TPAD = { l: 34, r: 10, t: 10, b: 22 }
 function Timeline({
   events,
   snapshot,
+  origin,
   range,
   setRange,
   marks,
 }: {
   events: OpsEvent[]
   snapshot: number
+  /** Where the records stop and the simulation starts. */
+  origin: number
   range: [number, number] | null
   setRange: (r: [number, number] | null) => void
   marks: OpsEvent[]
@@ -1561,6 +2097,12 @@ function Timeline({
             />
           ))}
 
+          {origin < snapshot ? (
+            <>
+              <rect x={x(origin)} y={TPAD.t} width={Math.max(0, x(snapshot) - x(origin))} height={ih} fill="var(--color-teal)" fillOpacity={0.05} />
+              <line x1={x(origin)} x2={x(origin)} y1={TPAD.t} y2={TPAD.t + ih} stroke="var(--color-tertiary)" strokeWidth={1} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
+            </>
+          ) : null}
           <line x1={x(snapshot)} x2={x(snapshot)} y1={TPAD.t - 4} y2={TPAD.t + ih} stroke="var(--color-teal)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
 
           {days.map((d, i) =>
@@ -1633,9 +2175,9 @@ function Feed({
             <li key={i} className="flex items-center gap-[8px] border-b border-hair/50 px-[12px] py-[4px]">
               <span className="shrink-0 tabular-nums text-tertiary">{stamp(e.t)}</span>
               <span className="size-[6px] shrink-0 rounded-[2px]" style={{ background: ACTOR_COLOUR[e.actor] }} />
-              <span className="min-w-0 flex-1 truncate font-sans text-[11.5px] text-body">
-                {commandName(e.cmd)}
-                {e.toState ? <span className="text-tertiary"> → {e.toState.toLowerCase()}</span> : null}
+              <span className="min-w-0 flex-1 truncate font-sans text-[11.5px] text-body" title={e.text}>
+                {e.text ?? commandName(e.cmd)}
+                {e.toState && !e.text ? <span className="text-tertiary"> → {e.toState.toLowerCase()}</span> : null}
               </span>
               {o ? (
                 <button type="button" onClick={() => pick(o.id)} className="shrink-0 text-secondary hover:text-label hover:underline">

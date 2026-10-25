@@ -1,5 +1,5 @@
 // Which icon stands for which thing. One table, so a custody case shows a key
-// on the dashboard, in the queue and on the case page alike.
+// on the ops map, in the queue and on the case page alike.
 import type { IconName } from './icons'
 
 /** Keyed by the case badge, which is what the operator reads beside it. */
